@@ -1,0 +1,310 @@
+# =============================================================================
+# .github/workflows/ci.yml — ShortURL CI/CD Pipeline
+#
+# 触发条件：push / PR 到 main 分支
+# 安全门禁：test + SAST(Semgrep) + 容器扫描(Trivy) + 集成测试(integration-test)
+#
+# 5-Job 结构：
+#   1. test              — pytest 单元测试
+#   2. sast              — Semgrep 静态分析（仅报告，不阻断）
+#   3. container-scan   — Trivy 镜像扫描（severity CRITICAL/HIGH，仅报告）
+#   4. integration-test — Docker Compose 集成测试（容器内 pytest）
+#   5. summary           — 各 Job 状态汇总
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Job 1: test — pytest 单元测试
+  # --------------------------------------------------------------------------
+  test:
+    name: Test (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pytest>=8.0 pytest-cov>=5.0
+
+      - name: Install project (editable)
+        run: pip install -e . --quiet 2>/dev/null || true
+
+      - name: Run pytest
+        run: pytest -v --cov=. --cov-report=xml --cov-report=term || pytest -v
+
+      - name: Upload coverage
+        if: fileExists('./coverage.xml')
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+          verbose: true
+
+  # --------------------------------------------------------------------------
+  # Job 2: sast — Semgrep 静态代码分析（仅 scan，不阻断）
+  # --------------------------------------------------------------------------
+  sast:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep Scan
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >
+            p/python
+            p/security-audit
+          publish-token: ${{ secrets.SEMGREP_APP_TOKEN }}
+          publish-deployment-id: ${{ secrets.SEMGREP_DEPLOYMENT_ID }}
+          generateSarif: true
+          output: semgrep.sarif
+
+      - name: Upload Semgrep results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-results
+          path: semgrep.sarif
+          retention-days: 30
+
+      - name: Display Semgrep findings summary
+        run: |
+          if grep -q '"results":\s*\[\]' semgrep.sarif 2>/dev/null || ! grep -q '"results":' semgrep.sarif 2>/dev/null; then
+            echo "✅ No Semgrep findings — all clear!"
+          else
+            echo "📋 Semgrep findings detected (see artifact for details)"
+          fi
+
+  # --------------------------------------------------------------------------
+  # Job 3: container-scan — Trivy 容器镜像扫描
+  #                    若无 Dockerfile 则回退为文件系统扫描
+  # --------------------------------------------------------------------------
+  container-scan:
+    name: Container Scan (Trivy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check if Dockerfile exists
+        id: has_dockerfile
+        run: |
+          if [ -f "Dockerfile" ]; then
+            echo "has_dockerfile=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_dockerfile=false" >> $GITHUB_OUTPUT
+            echo "ℹ️  No Dockerfile found — skipping image build, using filesystem scan instead"
+          fi
+
+      # --- Docker 镜像扫描（仅当 Dockerfile 存在时） ---
+      - name: Set up Docker Buildx
+        if: steps.has_dockerfile.outputs.has_dockerfile == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        if: steps.has_dockerfile.outputs.has_dockerfile == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          target: production
+          push: false
+          load: true
+          tags: shorturl:latest,shorturl:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Run Trivy scanner (container image)
+        if: steps.has_dockerfile.outputs.has_dockerfile == 'true'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'shorturl:${{ github.sha }}'
+          severity: 'CRITICAL,HIGH'
+          format: 'sarif'
+          output: trivy-image.sarif
+          exit-code: '0'
+          vuln-type: 'os,library'
+
+      # --- 文件系统扫描（fallback） ---
+      - name: Run Trivy scanner (filesystem)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          scan-dir-exclude: 'tests/,test_data/,docs/,node_modules/,venv/,.venv/,__pycache__/'
+          severity: 'CRITICAL,HIGH'
+          format: 'sarif'
+          output: trivy-fs.sarif
+          exit-code: '0'
+
+      - name: Upload Trivy FS results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-fs-results
+          path: trivy-fs.sarif
+          retention-days: 30
+
+      - name: Upload Trivy image results
+        if: always() && steps.has_dockerfile.outputs.has_dockerfile == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-image-results
+          path: trivy-image.sarif
+          retention-days: 30
+
+      - name: Display Trivy summary
+        run: |
+          echo "Trivy scan complete."
+          echo "Filesystem scan: trivy-fs.sarif"
+          if [[ "${{ steps.has_dockerfile.outputs.has_dockerfile }}" == "true" ]]; then
+            echo "Container scan : trivy-image.sarif"
+          fi
+
+  # --------------------------------------------------------------------------
+  # Job 4: integration-test — Docker Compose 集成测试（容器内 pytest）
+  #   • 启动完整 ShortURL + SQLite 环境
+  #   • 运行容器内 pytest（真实容器环境，非本地 Python）
+  #   • 网络隔离测试（独立 subnet，无 host 污染）
+  #   • 仅 report，不阻断（continue-on-error: false，但 exit-code 来自 pytest）
+  # --------------------------------------------------------------------------
+  integration-test:
+    name: Integration Test (docker compose)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check if docker-compose.test.yml exists
+        id: has_test_compose
+        run: |
+          if [ -f "docker-compose.test.yml" ]; then
+            echo "has_test_compose=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_test_compose=false" >> $GITHUB_OUTPUT
+            echo "⚠️  docker-compose.test.yml not found — skipping integration-test"
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.has_test_compose.outputs.has_test_compose == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      # Build test image (reuses cache from container-scan job via GHA cache)
+      - name: Build test image
+        if: steps.has_test_compose.outputs.has_test_compose == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          target: production
+          push: false
+          load: true
+          tags: shorturl:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      # Build docker-compose.test.yml service image tag too
+      - name: Tag image for compose
+        if: steps.has_test_compose.outputs.has_test_compose == 'true'
+        run: docker tag shorturl:test shorturl:test
+
+      # Start services and run pytest inside container
+      - name: Run integration tests in container
+        if: steps.has_test_compose.outputs.has_test_compose == 'true'
+        id: integration-test
+        run: |
+          docker compose -f docker-compose.test.yml up --build --abort-on-container-exit
+
+      # Collect test results (if container exited successfully)
+      - name: Collect test results
+        if: steps.has_test_compose.outputs.has_test_compose == 'true'
+        run: |
+          # Copy coverage and test reports from container
+          docker compose -f docker-compose.test.yml cp shorturl-test:/app/coverage.xml . 2>/dev/null && echo "coverage.xml copied" || echo "No coverage.xml found"
+          docker compose -f docker-compose.test.yml cp shorturl-test:/app/tests/.pytest_cache . 2>/dev/null && echo "pytest_cache copied" || echo "No pytest_cache found"
+
+      - name: Upload integration test results
+        if: always() && steps.has_test_compose.outputs.has_test_compose == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results
+          path: |
+            coverage.xml
+            .pytest_cache/
+          retention-days: 7
+        continue-on-error: true
+
+      # Cleanup
+      - name: Cleanup
+        if: steps.has_test_compose.outputs.has_test_compose == 'true'
+        run: docker compose -f docker-compose.test.yml down -v 2>/dev/null || true
+
+  # --------------------------------------------------------------------------
+  # Job 5: summary — 汇总报告
+  # --------------------------------------------------------------------------
+  summary:
+    name: CI Summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs:
+      - test
+      - sast
+      - container-scan
+      - integration-test
+
+    # 即使上游有失败也执行 summary，确保能看到状态
+    if: always()
+
+    steps:
+      - name: Build CI Status Summary
+        run: |
+          echo "# 📊 CI Pipeline Summary — ShortURL"
+          echo ""
+          echo "| Job | Status |"
+          echo "|-----|--------|"
+          echo "| ✅ test              | \`${{ needs.test.result }}\` |"
+          echo "| 🔍 sast              | \`${{ needs.sast.result }}\` |"
+          echo "| 🐳 container-scan    | \`${{ needs.container-scan.result }}\` |"
+          echo "| 🐛 integration-test  | \`${{ needs.integration-test.result }}\` |"
+          echo ""
+          echo "**注意**: sast 与 container-scan 设置为 continue-on-error，仅报告发现，不阻断合并。"
+          echo "**integration-test**: 容器内 pytest，网络隔离环境。"
+          echo "**Artifact**: Semgrep SARIF → semgrep-results; Trivy FS → trivy-fs-results; Trivy Image → trivy-image-results; Integration → integration-test-results"

@@ -1,0 +1,84 @@
+# =============================================================================
+# docker-compose.test.yml — ShortURL Integration Test Stack
+#
+# Simulates production-like environment with:
+#   • ShortURL service on port 8000
+#   • Isolated test database (SQLite in memory via RAM volume)
+#   • slow volume for rate-limit bandwidth simulation
+#   • Isolated network (no cross-test pollution)
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml up --abort-on-container-exit
+#   docker compose -f docker-compose.test.yml down -v
+#   docker compose -f docker-compose.test.yml run --rm shorturl pytest tests/ -v
+# =============================================================================
+
+services:
+  shorturl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: shorturl:test
+    container_name: shorturl-test
+    # Override command to run pytest instead of uvicorn
+    command: >
+      pytest tests/ -v
+      --cov=app
+      --cov-report=term-missing
+      --cov-report=xml
+      --tb=short
+    environment:
+      # Isolated test DB — RAM tmpfs volume (fast, ephemeral)
+      DATABASE_URL: "sqlite:///./data/test_shorturl.db"
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      BASE_URL: "http://shorturl-test:8000"
+      SECRET_KEY: "test-secret-do-not-use-in-prod"
+      DEBUG: "false"
+      PROMETHEUS_ENABLED: "false"
+      # Disable rate limiting for integration tests (speed)
+      RATE_LIMIT_PER_MINUTE: "999999"
+      DEFAULT_EXPIRY_DAYS: "30"
+      MAX_ALIAS_LENGTH: "32"
+      MIN_ALIAS_LENGTH: "3"
+    volumes:
+      # RAM tmpfs for ephemeral test database
+      - type: tmpfs
+        target: /app/data
+        tmpfs:
+          size: 16777216  # 16 MB
+      # Bind-mount tests so changes are reflected without rebuild
+      - ./tests:/app/tests:ro
+      - ./app:/app/app:ro
+      # slow volume: can be used by network simulation in rate-limit tests
+      - slow-volume:/app/slow:ro
+    networks:
+      - shorturl-test-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 10s
+
+# ── Named volumes ────────────────────────────────────────────────────────────
+
+volumes:
+  # tmpfs — RAM-backed, ephemeral (auto-cleaned on docker compose down)
+  shorturl-data:
+    driver: local
+  # slow-volume: bind-mount a directory with bandwidth-limiting scripts
+  # Can be used to simulate slow network conditions for rate-limit integration tests
+  # Usage: mount a directory containing tc-scripts or slow-responding endpoints
+  slow-volume:
+    driver: local
+
+networks:
+  shorturl-test-net:
+    driver: bridge
+    ipam:
+      config:
+        # Isolated subnet — no access to host network, no cross-contamination
+        - subnet: 172.28.0.0/16

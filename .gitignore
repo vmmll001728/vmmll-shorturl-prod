@@ -1,0 +1,12 @@
+﻿.coverage
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv/
+venv/
+.env
+test_shorturl.db
+*.log
+

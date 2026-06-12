@@ -1,0 +1,69 @@
+# =============================================================================
+# docker-compose.yml — ShortURL Production Stack
+#
+# Services:
+#   shorturl  — FastAPI application (non-root, tini, healthcheck)
+#   db        — (optional) named volume for SQLite persistence
+#
+# Usage:
+#   docker compose up -d          # start in background
+#   docker compose logs -f        # tail logs
+#   docker compose down           # stop
+#   docker compose down -v        # stop and remove volumes
+#   docker compose exec shorturl curl http://localhost:8000/health
+# =============================================================================
+
+services:
+  shorturl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: shorturl:latest
+    container_name: shorturl
+    restart: unless-stopped
+    ports:
+      # Host port : Container port
+      - "${SHORTURL_PORT:-8000}:8000"
+    environment:
+      # Database — mounted volume ensures persistence across restarts
+      DATABASE_URL: "sqlite:///./data/shorturl.db"
+      # Server
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      # Application
+      SECRET_KEY: "${SECRET_KEY:-change-me-in-production}"
+      BASE_URL: "${BASE_URL:-http://localhost:8000}"
+      DEFAULT_EXPIRY_DAYS: "${DEFAULT_EXPIRY_DAYS:-30}"
+      MAX_ALIAS_LENGTH: "${MAX_ALIAS_LENGTH:-32}"
+      MIN_ALIAS_LENGTH: "${MIN_ALIAS_LENGTH:-3}"
+      # Observability
+      PROMETHEUS_ENABLED: "${PROMETHEUS_ENABLED:-true}"
+      # Rate limiting
+      RATE_LIMIT_PER_MINUTE: "${RATE_LIMIT_PER_MINUTE:-60}"
+      # Debug (disable in production)
+      DEBUG: "${DEBUG:-false}"
+    volumes:
+      # Named volume for SQLite database persistence
+      - shorturl-data:/app/data
+      # Optional: mount local .env for local dev overrides
+      - ./data:/app/data:rw
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - shorturl-net
+    # Graceful shutdown signal forwarding via tini
+    stop_grace_period: 35s
+
+volumes:
+  # Named volume: persists SQLite DB across container restarts/rebuilds
+  shorturl-data:
+    driver: local
+
+networks:
+  shorturl-net:
+    driver: bridge
