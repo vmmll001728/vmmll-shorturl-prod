@@ -38,7 +38,7 @@ RUN pip install \
 
 # Copy source code for bytecode compilation
 COPY app/ app/
-COPY run.py pyproject.toml uvicorn_config.json . 2>/dev/null || true
+# Note: run.py / pyproject.toml / uvicorn_config.json not present in this project — entry point is app/main.py
 
 # Pre-compile Python bytecode
 RUN python -m compileall -q /build/app/ || true
@@ -65,8 +65,8 @@ RUN groupadd --gid 1000 appgroup \
 
 WORKDIR /app
 
-# Copy installed packages from builder
-COPY --from=builder /install /usr/local/lib/python3.12/site-packages/
+# Copy installed packages and binaries from builder
+COPY --from=builder /install /install/
 
 # Copy compiled source
 COPY --from=builder /build/app/ ./app/
@@ -81,6 +81,8 @@ USER appuser
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONFAULTHANDLER=1 \
+    PYTHONPATH=/install \
+    PATH=/install/bin:$PATH \
     UVICORN_WORKERS=1 \
     HOST=0.0.0.0 \
     PORT=8000
