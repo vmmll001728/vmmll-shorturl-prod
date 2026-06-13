@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
 import pytest
@@ -40,7 +40,7 @@ class TestLinkModel:
 
     def test_link_is_expired_true_when_in_past(self, db_session):
         from app.models.link import Link
-        past = datetime.utcnow() - timedelta(days=1)
+        past = datetime.now(timezone.utc) - timedelta(days=1)
         link = Link(alias="expired1", original_url="https://example.com", expires_at=past)
         db_session.add(link)
         db_session.commit()
@@ -48,7 +48,7 @@ class TestLinkModel:
 
     def test_link_is_expired_false_when_in_future(self, db_session):
         from app.models.link import Link
-        future = datetime.utcnow() + timedelta(days=30)
+        future = datetime.now(timezone.utc) + timedelta(days=30)
         link = Link(alias="future1", original_url="https://example.com", expires_at=future)
         db_session.add(link)
         db_session.commit()
@@ -141,7 +141,8 @@ class TestCreateLink:
         assert expires_at is not None
         # Should be ~7 days from now
         exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00").replace("+00:00", ""))
-        assert (exp_dt - datetime.utcnow()).days in (6, 7, 8)
+        exp_dt_aware = exp_dt.replace(tzinfo=timezone.utc) if exp_dt.tzinfo is None else exp_dt
+        assert (exp_dt_aware - datetime.now(timezone.utc)).days in (6, 7, 8)
 
     def test_create_link_returns_created_at(self, client):
         resp = client.post("/api/v1/links", json={"url": "https://example.com"})
@@ -175,7 +176,7 @@ class TestGetLink:
 
     def test_get_link_410_when_expired(self, client, db_session):
         from app.models.link import Link
-        past = datetime.utcnow() - timedelta(days=1)
+        past = datetime.now(timezone.utc) - timedelta(days=1)
         link = Link(alias="expired_alias", original_url="https://example.com", expires_at=past)
         db_session.add(link)
         db_session.commit()
@@ -359,7 +360,8 @@ class TestExpiryBoundary:
         expires_at = datetime.fromisoformat(
             resp.json()["data"]["expires_at"].replace("Z", "+00:00").replace("+00:00", "")
         )
-        delta = expires_at - datetime.utcnow()
+        expires_at_aware = expires_at.replace(tzinfo=timezone.utc) if expires_at.tzinfo is None else expires_at
+        delta = expires_at_aware - datetime.now(timezone.utc)
         assert 0 <= delta.days <= 1
 
     def test_expiry_3650_days(self, client):
@@ -392,7 +394,7 @@ class TestExpiryBoundary:
 
     def test_expired_link_redirect_returns_410(self, client, db_session):
         from app.models.link import Link
-        past = datetime.utcnow() - timedelta(hours=1)
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
         link = Link(alias="willbeexpired", original_url="https://example.com", expires_at=past)
         db_session.add(link)
         db_session.commit()

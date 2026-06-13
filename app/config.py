@@ -24,6 +24,10 @@ class Config:
     )
     app_version: str = os.getenv("APP_VERSION", "1.0.0")
     api_key: str = os.getenv("API_KEY", "")
+    # DB connection pool (PostgreSQL/MySQL; SQLite uses SingletonThreadPool)
+    db_pool_size: int = int(os.getenv("DB_POOL_SIZE", "5"))
+    db_max_overflow: int = int(os.getenv("DB_MAX_OVERFLOW", "10"))
+    db_pool_recycle: int = int(os.getenv("DB_POOL_RECYCLE", "3600"))
 
 
 config = Config()

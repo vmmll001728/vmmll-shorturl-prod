@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import sys
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -120,7 +120,7 @@ def health() -> SuccessResponse:
     return SuccessResponse(
         data={
             "status": "ok",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "version": config.app_version,
         }
     )

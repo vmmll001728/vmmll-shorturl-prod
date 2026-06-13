@@ -1,7 +1,7 @@
 """Link routes — create, query, delete, redirect."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -81,7 +81,7 @@ def create_link(body: LinkCreate, db: Session = Depends(get_db)) -> SuccessRespo
 
     expires_at: Optional[datetime] = None
     if body.expires_in_days:
-        expires_at = datetime.utcnow() + timedelta(days=body.expires_in_days)
+        expires_at = datetime.now(timezone.utc) + timedelta(days=body.expires_in_days)
 
     link = Link(
         alias=alias,
@@ -210,3 +210,31 @@ def redirect_to_original(alias: str, db: Session = Depends(get_db)):
     )
     db.commit()
     return RedirectResponse(url=link.original_url, status_code=status.HTTP_302_FOUND)
+
+
+@router.delete(
+    "/admin/cleanup",
+    response_model=SuccessResponse,
+    tags=["admin"],
+    summary="Clean up expired links",
+    responses={
+        200: {"model": SuccessResponse, "description": "Cleanup result"},
+    },
+)
+def cleanup_expired_links(
+    grace_period_days: int = Query(default=0, ge=0, le=365),
+    db: Session = Depends(get_db),
+):
+    """Mark expired links as deleted. Requires API Key.
+
+    - grace_period_days: only delete links expired for at least N days (default 0 = all expired)
+    """
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=grace_period_days)
+    result = db.query(Link).filter(
+        Link.is_deleted == False,  # noqa: E712
+        Link.expires_at <= cutoff,
+    ).update({"is_deleted": True})
+    db.commit()
+    return SuccessResponse(data={"deleted": result, "grace_period_days": grace_period_days})

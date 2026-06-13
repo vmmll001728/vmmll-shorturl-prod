@@ -1,7 +1,7 @@
 """SQLAlchemy Link model."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import DateTime, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -24,6 +24,10 @@ class Link(Base):
 
     @property
     def is_expired(self) -> bool:
+        """Handle both timezone-aware and naive expires_at (legacy DB rows)."""
         if self.expires_at is None:
             return False
-        return datetime.utcnow() > self.expires_at
+        exp = self.expires_at
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) > exp
