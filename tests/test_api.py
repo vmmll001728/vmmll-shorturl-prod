@@ -652,7 +652,7 @@ class TestCORS:
         resp = client.options(
             "/api/v1/links",
             headers={
-                "Origin": "https://example.com",
+                "Origin": "http://localhost:3000",
                 "Access-Control-Request-Method": "POST",
             },
         )

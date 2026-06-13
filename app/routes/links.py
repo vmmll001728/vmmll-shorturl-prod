@@ -19,6 +19,7 @@ from app.types.models import (
     SuccessResponse,
 )
 from app.utils.slug import generate_slug, is_valid_alias
+from app.utils.url_validator import is_safe_url
 
 router = APIRouter(prefix="/api/v1", tags=["links"])
 
@@ -40,6 +41,11 @@ def get_db() -> Session:
 )
 def create_link(body: LinkCreate, db: Session = Depends(get_db)) -> SuccessResponse:
     """Create a short link."""
+    if not is_safe_url(body.url):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="URL is not safe: private/loopback addresses and non-HTTP(S) schemes are not allowed",
+        )
     if body.custom_alias:
         if not is_valid_alias(body.custom_alias):
             raise HTTPException(

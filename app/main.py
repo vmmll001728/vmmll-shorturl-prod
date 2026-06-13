@@ -10,10 +10,21 @@ from datetime import datetime
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import logging
+
+# Configure structured logging — JSON-friendly, container-friendly
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+
 from app.config import config
 from app.database import init_db
+from app.middleware.auth import APIKeyMiddleware
+from app.middleware.logging import RequestLoggingMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.routes.links import router as links_router
+from app.routes.version import router as version_router
 from app.types.models import HealthCheck, SuccessResponse
 
 # Prometheus instrumentator - imported lazily so the app works even if prometheus is absent
@@ -29,7 +40,6 @@ except ImportError:
 
 # 不安全的 SECRET_KEY 默认值列表
 _UNSAFE_SECRET_KEYS = frozenset({
-    "",
     "dev-secret-change-in-prod",
     "change-me-in-production",
     "changeme",
@@ -38,7 +48,7 @@ _UNSAFE_SECRET_KEYS = frozenset({
 
 def _check_secret_key():
     """应用启动前强制校验 SECRET_KEY，防止遗忘配置时以弱密钥运行。"""
-    if config.secret_key in _UNSAFE_SECRET_KEYS:
+    if not config.secret_key or config.secret_key in _UNSAFE_SECRET_KEYS:
         print(
             f"[CONFIG ERROR] SECRET_KEY 使用了不安全默认值！\n"
             f"  当前值: '{config.secret_key}'\n"
@@ -58,7 +68,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="ShortURL",
-    version="1.0.0",
+    version=config.app_version,
     description="URL shortening service with analytics",
     lifespan=lifespan,
 )
@@ -66,15 +76,17 @@ app = FastAPI(
 # Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=config.cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(APIKeyMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(RateLimitMiddleware)
 
 # Routes
 app.include_router(links_router)
+app.include_router(version_router)
 
 
 @app.get("/health", response_model=SuccessResponse, tags=["health"])
@@ -84,7 +96,7 @@ def health() -> SuccessResponse:
         data={
             "status": "ok",
             "timestamp": datetime.utcnow().isoformat(),
-            "version": "1.0.0",
+            "version": config.app_version,
         }
     )
 

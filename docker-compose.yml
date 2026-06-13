@@ -31,8 +31,10 @@ services:
       # Server
       HOST: "0.0.0.0"
       PORT: "8000"
+      # Auth
+      API_KEY: "${API_KEY:-}"
       # Application — generate with: python -c "import secrets; print(secrets.token_hex(32))"
-      SECRET_KEY: "${SECRET_KEY:-871cb7a6301bc65a30697f7978c76067f59d9a8c8931d090817dc0f3d93b9f46}"
+      SECRET_KEY: "${SECRET_KEY:-}"
       BASE_URL: "${BASE_URL:-http://localhost:8000}"
       DEFAULT_EXPIRY_DAYS: "${DEFAULT_EXPIRY_DAYS:-30}"
       MAX_ALIAS_LENGTH: "${MAX_ALIAS_LENGTH:-32}"
