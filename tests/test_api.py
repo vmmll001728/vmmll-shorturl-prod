@@ -775,40 +775,45 @@ class TestSSRFProtection:
 class TestAdminCleanup:
     """P0: Admin cleanup endpoint tests."""
 
-    def test_cleanup_expired_links(self, client, db_session):
+    def test_cleanup_requires_admin_key(self, client):
+        # Regular API key should be rejected for admin routes
+        resp = client.delete("/api/v1/admin/cleanup")
+        assert resp.status_code == 403
+
+    def test_cleanup_expired_links(self, admin_client, db_session):
         from app.models.link import Link
         # Create an expired link
         past = datetime.now(timezone.utc) - timedelta(days=2)
         link = Link(alias="expired_cleanup", original_url="https://expired.com", expires_at=past)
         db_session.add(link)
         db_session.commit()
-        resp = client.delete("/api/v1/admin/cleanup")
+        resp = admin_client.delete("/api/v1/admin/cleanup")
         assert resp.status_code == 200
         assert resp.json()["data"]["deleted"] >= 1
 
-    def test_cleanup_with_grace_period(self, client, db_session):
+    def test_cleanup_with_grace_period(self, admin_client, db_session):
         from app.models.link import Link
         # Link expired 1 day ago — grace=5 means it should NOT be cleaned
         past = datetime.now(timezone.utc) - timedelta(days=1)
         link = Link(alias="grace_test", original_url="https://grace.com", expires_at=past)
         db_session.add(link)
         db_session.commit()
-        resp = client.delete("/api/v1/admin/cleanup?grace_period_days=5")
+        resp = admin_client.delete("/api/v1/admin/cleanup?grace_period_days=5")
         assert resp.status_code == 200
         assert resp.json()["data"]["deleted"] == 0
 
-    def test_cleanup_no_expired_links_returns_zero(self, client, db_session):
+    def test_cleanup_no_expired_links_returns_zero(self, admin_client, db_session):
         from app.models.link import Link
         # Create only a non-expired link
         future = datetime.now(timezone.utc) + timedelta(days=30)
         link = Link(alias="future_cleanup", original_url="https://future.com", expires_at=future)
         db_session.add(link)
         db_session.commit()
-        resp = client.delete("/api/v1/admin/cleanup")
+        resp = admin_client.delete("/api/v1/admin/cleanup")
         assert resp.status_code == 200
         assert resp.json()["data"]["deleted"] == 0
 
-    def test_cleanup_grace_boundary_values(self, client, db_session):
+    def test_cleanup_grace_boundary_values(self, admin_client, db_session):
         from app.models.link import Link
         # Create expired link
         past = datetime.now(timezone.utc) - timedelta(days=1)
@@ -816,7 +821,7 @@ class TestAdminCleanup:
         db_session.add(link)
         db_session.commit()
         # grace=0: should delete all expired
-        resp = client.delete("/api/v1/admin/cleanup?grace_period_days=0")
+        resp = admin_client.delete("/api/v1/admin/cleanup?grace_period_days=0")
         assert resp.status_code == 200
         assert resp.json()["data"]["deleted"] >= 1
 

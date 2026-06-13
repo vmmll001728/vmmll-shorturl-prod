@@ -13,6 +13,7 @@ os.environ["DATABASE_URL"] = "sqlite:///./test_shorturl.db"
 os.environ["PROMETHEUS_ENABLED"] = "false"
 os.environ["SECRET_KEY"] = "test-secret-key-do-not-use-in-production-32chars"
 os.environ["API_KEY"] = "test-api-key-for-testing"
+os.environ["ADMIN_KEY"] = "test-admin-key-for-testing"
 # P0-2 FIX: Don't set RATE_LIMIT_PER_MINUTE globally - let tests control it
 # Tests that need rate limiting disabled can set it in their own fixtures
 # os.environ["RATE_LIMIT_PER_MINUTE"] = "999999"
@@ -110,6 +111,18 @@ def client(db_engine):
     # Restore
     links_module.get_db = _original_get_db
     # Don't drop tables here - db_engine fixture handles cleanup
+
+
+@pytest.fixture
+def admin_client(client):
+    """Client with admin key for admin routes."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+    import app.routes.links as links_module
+
+    # Reuse the same DB session setup but with admin key
+    with TestClient(app, raise_server_exceptions=True, headers={"X-API-Key": "test-admin-key-for-testing"}) as ac:
+        yield ac
 
 
 @pytest.fixture

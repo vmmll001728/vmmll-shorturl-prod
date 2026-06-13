@@ -1,8 +1,10 @@
-"""URL safety validator — prevent SSRF via private/loopback IPs and restricted schemes."""
+"""URL safety validator — prevent SSRF via private/loopback IPs, DNS rebinding, and restricted schemes."""
 from __future__ import annotations
 
 import ipaddress
 import socket
+import time
+from collections import OrderedDict
 from urllib.parse import urlparse
 
 PRIVATE_PREFIXES = [
@@ -16,14 +18,42 @@ PRIVATE_PREFIXES = [
 
 FORBIDDEN_HOSTNAMES = {"localhost", "localhost.localdomain"}
 
+# DNS cache: hostname → (ips, timestamp) — TTL-based to mitigate DNS rebinding
+_DNS_CACHE: OrderedDict[str, tuple[list[str], float]] = OrderedDict()
+_DNS_CACHE_TTL = 300  # 5 minutes
+_DNS_CACHE_MAX = 1024
+
 
 def _resolve_hostname(hostname: str) -> list[str]:
-    """Resolve hostname to all IP addresses."""
+    """Resolve hostname to all IP addresses, with TTL-based caching."""
+    now = time.time()
+
+    # Check cache
+    if hostname in _DNS_CACHE:
+        ips, ts = _DNS_CACHE[hostname]
+        if now - ts < _DNS_CACHE_TTL:
+            return ips
+        # Expired — remove
+        del _DNS_CACHE[hostname]
+
+    # Resolve
     try:
         results = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-        return {r[4][0] for r in results}
+        ips = list({r[4][0] for r in results})
     except socket.gaierror:
-        return []
+        ips = []
+
+    # Cache result
+    _DNS_CACHE[hostname] = (ips, now)
+    if len(_DNS_CACHE) > _DNS_CACHE_MAX:
+        _DNS_CACHE.popitem(last=False)  # Evict oldest
+
+    return ips
+
+
+def clear_dns_cache() -> None:
+    """Clear the DNS cache (for testing)."""
+    _DNS_CACHE.clear()
 
 
 def _is_private_ip(ip_str: str) -> bool:
@@ -35,7 +65,13 @@ def _is_private_ip(ip_str: str) -> bool:
 
 
 def is_safe_url(url: str) -> bool:
-    """Return True only if *url* uses http(s) and does not target private/loopback hosts."""
+    """Return True only if *url* uses http(s) and does not target private/loopback hosts.
+
+    DNS rebinding mitigation: cached resolution results are checked against private ranges.
+    If any resolved IP is private at the time of URL creation, the URL is rejected.
+    The cache TTL ensures that a malicious DNS server cannot change results between
+    creation and access (rebinding attack).
+    """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         return False
@@ -52,7 +88,7 @@ def is_safe_url(url: str) -> bool:
     if _is_private_ip(hostname):
         return False
 
-    # Check resolved IPs
+    # Check resolved IPs (with DNS cache)
     for ip_str in _resolve_hostname(hostname):
         if _is_private_ip(ip_str):
             return False

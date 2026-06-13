@@ -24,6 +24,14 @@ class Config:
     )
     app_version: str = os.getenv("APP_VERSION", "1.0.0")
     api_key: str = os.getenv("API_KEY", "")
+    admin_key: str = os.getenv("ADMIN_KEY", "")
+    # Multiple API keys (comma-separated, for rotation)
+    api_keys: List[str] = field(
+        default_factory=lambda: [k for k in os.getenv("API_KEYS", "").split(",") if k.strip()]
+    )
+    admin_keys: List[str] = field(
+        default_factory=lambda: [k for k in os.getenv("ADMIN_KEYS", "").split(",") if k.strip()]
+    )
     # DB connection pool (PostgreSQL/MySQL; SQLite uses SingletonThreadPool)
     db_pool_size: int = int(os.getenv("DB_POOL_SIZE", "5"))
     db_max_overflow: int = int(os.getenv("DB_MAX_OVERFLOW", "10"))
