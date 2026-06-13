@@ -10,6 +10,8 @@ PRIVATE_PREFIXES = [
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),  # Link-local (AWS metadata)
+    ipaddress.ip_network("0.0.0.0/8"),      # "This" network
 ]
 
 FORBIDDEN_HOSTNAMES = {"localhost", "localhost.localdomain"}

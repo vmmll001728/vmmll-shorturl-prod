@@ -346,8 +346,21 @@ class TestAliasConflicts:
         assert resp1.json()["data"]["alias"] == "myalias123"
 
     def test_deleted_alias_can_be_reused(self, client):
-        # See TestDeleteLink.test_delete_link_then_can_reuse_alias
-        pass  # Covered above
+        # P0 FIX: Was a `pass` stub with no actual assertion.
+        # Create, delete, then recreate with same alias.
+        resp = client.post(
+            "/api/v1/links",
+            json={"url": "https://reuse-test.com", "custom_alias": "reuseme1"},
+        )
+        assert resp.status_code == 201
+        client.delete("/api/v1/links/reuseme1")
+        resp2 = client.post(
+            "/api/v1/links",
+            json={"url": "https://newsite.com", "custom_alias": "reuseme1"},
+        )
+        assert resp2.status_code == 201
+        assert resp2.json()["data"]["alias"] == "reuseme1"
+        assert resp2.json()["data"]["original_url"] == "https://newsite.com"
 
 
 class TestExpiryBoundary:
@@ -451,9 +464,10 @@ class TestXSSProtection:
         resp = client.post("/api/v1/links", json={"url": xss_url})
         assert resp.status_code == 201
         data = resp.json()["data"]["original_url"]
-        # Should be stored as-is; XSS risk is in browser rendering which is
-        # the user's responsibility when rendering the original URL
-        assert "<script>" not in data or data == xss_url
+        # P0 FIX: Previously `or` made the condition always True.
+        # The URL is stored verbatim, so data == xss_url must hold.
+        # Verify that the stored value matches what was submitted.
+        assert data == xss_url
 
     def test_xss_in_custom_alias_sanitized(self, client):
         resp = client.post(
@@ -690,3 +704,162 @@ class TestDataIntegrity:
         db_session.expire_all()
         resp = client.get(f"/api/v1/links/{alias}")
         assert resp.json()["data"]["click_count"] == 99
+
+
+# =============================================================================
+# SECTION 8: P0 Test Gap Fixes — Auth, SSRF, Admin Cleanup, Exception Handlers
+# =============================================================================
+
+class TestAuthMiddleware:
+    """P0: API Key authentication middleware tests."""
+
+    def test_no_api_key_returns_401_on_write(self, client):
+        # POST without X-API-Key header → 401
+        from fastapi.testclient import TestClient
+        from app.main import app
+        with TestClient(app, raise_server_exceptions=True) as no_key_client:
+            resp = no_key_client.post("/api/v1/links", json={"url": "https://example.com"})
+        assert resp.status_code == 401
+        assert resp.json()["error"]["code"] == "UNAUTHORIZED"
+
+    def test_wrong_api_key_returns_401(self, client):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        with TestClient(app, raise_server_exceptions=True, headers={"X-API-Key": "wrong-key"}) as bad_client:
+            resp = bad_client.post("/api/v1/links", json={"url": "https://example.com"})
+        assert resp.status_code == 401
+        assert resp.json()["error"]["code"] == "UNAUTHORIZED"
+
+    def test_correct_api_key_returns_200(self, client):
+        # Default client already has correct key (set in conftest fixture)
+        resp = client.get("/api/v1/links")
+        assert resp.status_code == 200
+
+    def test_get_read_operations_do_not_require_key(self, client):
+        # GET requests should bypass auth (auth middleware only checks WRITE_METHODS)
+        from fastapi.testclient import TestClient
+        from app.main import app
+        with TestClient(app, raise_server_exceptions=True) as no_key_client:
+            resp = no_key_client.get("/api/v1/links")
+        assert resp.status_code == 200
+
+
+class TestSSRFProtection:
+    """P0: SSRF end-to-end tests — private/loopback IPs rejected."""
+
+    def test_loopback_127_0_0_1_rejected(self, client):
+        resp = client.post("/api/v1/links", json={"url": "http://127.0.0.1/secret"})
+        assert resp.status_code == 400
+        assert "not safe" in resp.json()["detail"].lower()
+
+    def test_aws_metadata_169_254_169_254_rejected(self, client):
+        resp = client.post("/api/v1/links", json={"url": "http://169.254.169.254/latest/meta-data/"})
+        assert resp.status_code == 400
+        assert "not safe" in resp.json()["detail"].lower()
+
+    def test_private_10_0_0_1_rejected(self, client):
+        resp = client.post("/api/v1/links", json={"url": "http://10.0.0.1/internal"})
+        assert resp.status_code == 400
+        assert "not safe" in resp.json()["detail"].lower()
+
+    def test_private_192_168_1_1_rejected(self, client):
+        resp = client.post("/api/v1/links", json={"url": "http://192.168.1.1/admin"})
+        assert resp.status_code == 400
+        assert "not safe" in resp.json()["detail"].lower()
+
+    def test_normal_https_url_accepted(self, client):
+        resp = client.post("/api/v1/links", json={"url": "https://example.com/safe-page"})
+        assert resp.status_code == 201
+
+
+class TestAdminCleanup:
+    """P0: Admin cleanup endpoint tests."""
+
+    def test_cleanup_expired_links(self, client, db_session):
+        from app.models.link import Link
+        # Create an expired link
+        past = datetime.now(timezone.utc) - timedelta(days=2)
+        link = Link(alias="expired_cleanup", original_url="https://expired.com", expires_at=past)
+        db_session.add(link)
+        db_session.commit()
+        resp = client.delete("/api/v1/admin/cleanup")
+        assert resp.status_code == 200
+        assert resp.json()["data"]["deleted"] >= 1
+
+    def test_cleanup_with_grace_period(self, client, db_session):
+        from app.models.link import Link
+        # Link expired 1 day ago — grace=5 means it should NOT be cleaned
+        past = datetime.now(timezone.utc) - timedelta(days=1)
+        link = Link(alias="grace_test", original_url="https://grace.com", expires_at=past)
+        db_session.add(link)
+        db_session.commit()
+        resp = client.delete("/api/v1/admin/cleanup?grace_period_days=5")
+        assert resp.status_code == 200
+        assert resp.json()["data"]["deleted"] == 0
+
+    def test_cleanup_no_expired_links_returns_zero(self, client, db_session):
+        from app.models.link import Link
+        # Create only a non-expired link
+        future = datetime.now(timezone.utc) + timedelta(days=30)
+        link = Link(alias="future_cleanup", original_url="https://future.com", expires_at=future)
+        db_session.add(link)
+        db_session.commit()
+        resp = client.delete("/api/v1/admin/cleanup")
+        assert resp.status_code == 200
+        assert resp.json()["data"]["deleted"] == 0
+
+    def test_cleanup_grace_boundary_values(self, client, db_session):
+        from app.models.link import Link
+        # Create expired link
+        past = datetime.now(timezone.utc) - timedelta(days=1)
+        link = Link(alias="grace_boundary", original_url="https://boundary.com", expires_at=past)
+        db_session.add(link)
+        db_session.commit()
+        # grace=0: should delete all expired
+        resp = client.delete("/api/v1/admin/cleanup?grace_period_days=0")
+        assert resp.status_code == 200
+        assert resp.json()["data"]["deleted"] >= 1
+
+
+class TestGlobalExceptionHandler:
+    """P0: Global exception handler tests."""
+
+    def test_500_handler_returns_unified_format(self, client):
+        # Directly test the global_exception_handler by calling it with a fake exception
+        from app.main import global_exception_handler
+        from starlette.requests import Request
+        from starlette.testclient import TestClient as StarletteClient
+        import asyncio
+
+        # Create a minimal ASGI scope to build a Request
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/v1/links/test",
+            "query_string": b"",
+            "headers": [],
+            "server": ("testserver", 80),
+        }
+        request = Request(scope)
+        exc = RuntimeError("simulated internal error")
+
+        # Call the handler directly
+        response = asyncio.run(global_exception_handler(request, exc))
+        assert response.status_code == 500
+        # Parse JSON body from response
+        import json
+        data = json.loads(response.body.decode())
+        assert data["success"] is False
+        assert data["error"]["code"] == "INTERNAL_ERROR"
+        assert data["error"]["message"] == "Internal server error"
+
+    def test_validation_exception_handler_format(self, client):
+        # Send invalid JSON to trigger RequestValidationError → 422 with unified format
+        resp = client.post(
+            "/api/v1/links",
+            json={"url": "not-a-valid-url"},
+        )
+        assert resp.status_code == 422
+        data = resp.json()
+        assert data["success"] is False
+        assert data["error"]["code"] == "VALIDATION_ERROR"
