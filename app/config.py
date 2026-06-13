@@ -28,6 +28,10 @@ class Config:
     db_pool_size: int = int(os.getenv("DB_POOL_SIZE", "5"))
     db_max_overflow: int = int(os.getenv("DB_MAX_OVERFLOW", "10"))
     db_pool_recycle: int = int(os.getenv("DB_POOL_RECYCLE", "3600"))
+    # Multi-worker support
+    workers: int = int(os.getenv("WORKERS", "1"))
+    # Redis for rate limiting (optional, falls back to in-memory)
+    redis_url: Optional[str] = os.getenv("REDIS_URL", None)
 
 
 config = Config()

@@ -3,13 +3,14 @@
 #
 # Services:
 #   shorturl  — FastAPI application (non-root, tini, healthcheck)
-#   db        — (optional) named volume for SQLite persistence
+#   redis     — (optional) Redis for distributed rate limiting
 #
 # Usage:
-#   docker compose up -d          # start in background
-#   docker compose logs -f        # tail logs
-#   docker compose down           # stop
-#   docker compose down -v        # stop and remove volumes
+#   docker compose up -d                    # start shorturl only
+#   docker compose --profile with-redis up -d  # start with Redis
+#   docker compose logs -f                  # tail logs
+#   docker compose down                     # stop
+#   docker compose down -v                  # stop and remove volumes
 #   docker compose exec shorturl curl http://localhost:8000/health
 # =============================================================================
 
@@ -43,6 +44,10 @@ services:
       PROMETHEUS_ENABLED: "${PROMETHEUS_ENABLED:-true}"
       # Rate limiting
       RATE_LIMIT_PER_MINUTE: "${RATE_LIMIT_PER_MINUTE:-60}"
+      # Redis (optional, for distributed rate limiting)
+      REDIS_URL: "${REDIS_URL:-}"
+      # Multi-worker (set >1 only when using Redis for rate limiting)
+      WORKERS: "${WORKERS:-1}"
       # Debug (disable in production)
       DEBUG: "${DEBUG:-false}"
     volumes:
@@ -61,9 +66,31 @@ services:
     # Graceful shutdown signal forwarding via tini
     stop_grace_period: 35s
 
+  # Redis service (optional, enable with --profile with-redis)
+  redis:
+    image: redis:7-alpine
+    container_name: shorturl-redis
+    restart: unless-stopped
+    profiles:
+      - with-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - shorturl-redis-data:/data
+    networks:
+      - shorturl-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
 volumes:
   # Named volume: persists SQLite DB across container restarts/rebuilds
   shorturl-data:
+    driver: local
+  # Named volume: persists Redis data
+  shorturl-redis-data:
     driver: local
 
 networks:
