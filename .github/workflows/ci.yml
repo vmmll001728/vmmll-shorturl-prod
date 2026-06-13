@@ -7,7 +7,7 @@
 # 5-Job 结构：
 #   1. test              — pytest 单元测试
 #   2. sast              — Semgrep 静态分析（仅报告，不阻断）
-#   3. container-scan   — Trivy 镜像扫描（severity CRITICAL/HIGH，仅报告）
+#   3. container-scan   — Trivy 扫描（CRITICAL阻断合并，HIGH仅报告）
 #   4. integration-test — Docker Compose 集成测试（容器内 pytest）
 #   5. summary           — 各 Job 状态汇总
 # =============================================================================
@@ -148,8 +148,13 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: false
 
+      # ── [BLOCKING] CRITICAL 漏洞阻断合并 ──────────────────────────────
+      # exit-code=1 使 step 失败，continue-on-error=false 确保失败传播到 job
+      # job 级别无 if:always()，故 step 失败会阻断下游 + 阻断 PR 合并
+      # ───────────────────────────────────────────────────────────────────
       - name: Run Trivy scanner (container image)
         if: steps.has_dockerfile.outputs.has_dockerfile == 'true'
+        continue-on-error: false
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: 'shorturl:${{ github.sha }}'
@@ -159,8 +164,10 @@ jobs:
           exit-code: '1'
           vuln-type: 'os,library'
 
+      # ── [NON-BLOCKING] HIGH 漏洞仅报告（需人工审查） ──────────────────
       - name: Run Trivy scan HIGH (non-blocking)
         if: steps.has_dockerfile.outputs.has_dockerfile == 'true'
+        continue-on-error: true
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: 'shorturl:${{ github.sha }}'
@@ -170,8 +177,11 @@ jobs:
           exit-code: '0'
           vuln-type: 'os,library'
 
-      # --- 文件系统扫描（fallback） ---
+      # ── [BLOCKING] 文件系统 CRITICAL 扫描（无 Dockerfile 时的兜底） ──
+      # 同容器扫描：exit-code=1 + continue-on-error=false = 明确阻断
+      # ───────────────────────────────────────────────────────────────────
       - name: Run Trivy scanner CRITICAL (filesystem)
+        continue-on-error: false
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'fs'
@@ -182,7 +192,9 @@ jobs:
           output: trivy-fs.sarif
           exit-code: '1'
 
+      # ── [NON-BLOCKING] 文件系统 HIGH 扫描 ────────────────────────────
       - name: Run Trivy scan HIGH (filesystem, non-blocking)
+        continue-on-error: true
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'fs'
@@ -326,6 +338,6 @@ jobs:
           echo "| 🐳 container-scan    | \`${{ needs.container-scan.result }}\` |"
           echo "| 🐛 integration-test  | \`${{ needs.integration-test.result }}\` |"
           echo ""
-          echo "**阻断策略**: CRITICAL 漏洞阻断合并；HIGH 漏洞报告但不阻断（需人工审查）。"
+          echo "**阻断策略**: CRITICAL 漏洞阻断合并（continue-on-error: false + exit-code: 1）；HIGH 漏洞报告但不阻断（需人工审查）。"
           echo "**integration-test**: 容器内 pytest，网络隔离环境。"
           echo "**Artifact**: Semgrep SARIF → semgrep-results; Trivy FS → trivy-fs-results; Trivy Image → trivy-image-results; Integration → integration-test-results"

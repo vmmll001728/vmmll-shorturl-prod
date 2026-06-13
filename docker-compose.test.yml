@@ -1,84 +1,85 @@
-# =============================================================================
-# docker-compose.test.yml — ShortURL Integration Test Stack
+# docker-compose.test.yml — CI Integration Test Environment
 #
-# Simulates production-like environment with:
-#   • ShortURL service on port 8000
-#   • Isolated test database (SQLite in memory via RAM volume)
-#   • slow volume for rate-limit bandwidth simulation
-#   • Isolated network (no cross-test pollution)
+# This file defines the test environment for GitHub Actions CI integration tests.
+# It uses SQLite for simplicity and sets relaxed rate limits for testing.
 #
-# Usage:
-#   docker compose -f docker-compose.test.yml up --abort-on-container-exit
+# Usage in GitHub Actions:
+#   docker compose -f docker-compose.test.yml up -d
+#   docker compose -f docker-compose.test.yml logs -f
 #   docker compose -f docker-compose.test.yml down -v
-#   docker compose -f docker-compose.test.yml run --rm shorturl pytest tests/ -v
-# =============================================================================
+#
+# Local testing:
+#   docker compose -f docker-compose.test.yml up --build -d
+#   curl http://localhost:8000/health
+#   docker compose -f docker-compose.test.yml down -v
 
 services:
-  shorturl:
+  shorturl-test:
+    # Use the production Dockerfile with a test tag
     build:
       context: .
       dockerfile: Dockerfile
       target: production
     image: shorturl:test
     container_name: shorturl-test
-    # Override command to run pytest instead of uvicorn
-    command: >
-      pytest tests/ -v
-      --cov=app
-      --cov-report=term-missing
-      --cov-report=xml
-      --tb=short
+
+    # Environment variables for testing
     environment:
-      # Isolated test DB — RAM tmpfs volume (fast, ephemeral)
-      DATABASE_URL: "sqlite:///./data/test_shorturl.db"
+      # Database - use SQLite for CI testing (no external dependencies)
+      DATABASE_URL: "sqlite:///./data/shorturl.db"
+
+      # Server
       HOST: "0.0.0.0"
       PORT: "8000"
-      BASE_URL: "http://shorturl-test:8000"
-      SECRET_KEY: "test-secret-do-not-use-in-prod"
-      DEBUG: "false"
-      PROMETHEUS_ENABLED: "false"
-      # Disable rate limiting for integration tests (speed)
-      RATE_LIMIT_PER_MINUTE: "999999"
+
+      # Auth - use a fixed secret for testing
+      SECRET_KEY: "test-secret-key-for-ci-12345"
+
+      # Application
+      BASE_URL: "http://localhost:8000"
       DEFAULT_EXPIRY_DAYS: "30"
       MAX_ALIAS_LENGTH: "32"
       MIN_ALIAS_LENGTH: "3"
+
+      # Rate limiting - set high for tests (individual tests can still rate limit)
+      RATE_LIMIT_PER_MINUTE: "1000"
+
+      # Observability - disable for cleaner test logs
+      PROMETHEUS_ENABLED: "false"
+
+      # Debug - disable in CI for production-like behavior
+      DEBUG: "false"
+
+      # Multi-worker - use 1 for simpler testing
+      WORKERS: "1"
+
+      # Redis - not used in basic CI tests (test optional Redis separately)
+      REDIS_URL: ""
+
+    # Volume for database persistence during test run
     volumes:
-      # RAM tmpfs for ephemeral test database
-      - type: tmpfs
-        target: /app/data
-        tmpfs:
-          size: 16777216  # 16 MB
-      # Bind-mount tests so changes are reflected without rebuild
-      - ./tests:/app/tests:ro
-      - ./app:/app/app:ro
-      # slow volume: can be used by network simulation in rate-limit tests
-      - slow-volume:/app/slow:ro
-    networks:
-      - shorturl-test-net
+      - shorturl-test-data:/app/data
+
+    # Health check to ensure service is ready before running tests
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
       start_period: 10s
-    stop_grace_period: 10s
 
-# ── Named volumes ────────────────────────────────────────────────────────────
+    # Network isolation for tests
+    networks:
+      - shorturl-test-net
+
+    # Restart policy - don't restart in CI (we want to see failures)
+    restart: "no"
 
 volumes:
-  # tmpfs — RAM-backed, ephemeral (auto-cleaned on docker compose down)
-  shorturl-data:
-    driver: local
-  # slow-volume: bind-mount a directory with bandwidth-limiting scripts
-  # Can be used to simulate slow network conditions for rate-limit integration tests
-  # Usage: mount a directory containing tc-scripts or slow-responding endpoints
-  slow-volume:
-    driver: local
+  # Named volume for test data (automatically cleaned up with -v flag)
+  shorturl-test-data:
 
 networks:
+  # Isolated network for test environment
   shorturl-test-net:
     driver: bridge
-    ipam:
-      config:
-        # Isolated subnet — no access to host network, no cross-contamination
-        - subnet: 172.28.0.0/16

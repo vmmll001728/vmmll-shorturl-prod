@@ -276,9 +276,9 @@ class TestFreezegunRateLimitWindow:
     @freeze_time("2026-06-13T12:00:00")
     def test_rate_limit_resets_after_window(self):
         """Rate limit counter must reset after window expiration."""
-        import app.middleware.rate_limit as rl
+        from app.services.rate_limit_store import InMemoryRateLimitStore
         # Set a low limit
-        store = rl.RateLimitStore(limit=3, window=60)
+        store = InMemoryRateLimitStore(limit=3, window=60)
         key = "test-client-xyz"
 
         # Burn all credits

@@ -144,6 +144,7 @@ def rate_limit_for_testing():
     other tests fast and reliable.
     """
     import os
+    from app.services.rate_limit_store import InMemoryRateLimitStore
     
     # Check if we're in a rate limit test
     # We look at PYTEST_CURRENT_TEST which contains the test name
@@ -154,14 +155,14 @@ def rate_limit_for_testing():
         os.environ["RATE_LIMIT_PER_MINUTE"] = "10"
         # Force reload of rate limit store
         import app.middleware.rate_limit as rate_limit_module
-        rate_limit_module._rate_store = rate_limit_module.RateLimitStore(limit=10)
+        rate_limit_module._rate_store = InMemoryRateLimitStore(limit=10)
         yield
         # Reset after test
         os.environ["RATE_LIMIT_PER_MINUTE"] = "999999"
-        rate_limit_module._rate_store = rate_limit_module.RateLimitStore(limit=999999)
+        rate_limit_module._rate_store = InMemoryRateLimitStore(limit=999999)
     else:
         # Disable rate limiting for all other tests
         os.environ["RATE_LIMIT_PER_MINUTE"] = "999999"
         import app.middleware.rate_limit as rate_limit_module
-        rate_limit_module._rate_store = rate_limit_module.RateLimitStore(limit=999999)
+        rate_limit_module._rate_store = InMemoryRateLimitStore(limit=999999)
         yield
