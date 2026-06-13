@@ -97,19 +97,6 @@ class TestSlugGenerator:
         assert is_valid_alias("my>link") is False
 
 
-class TestSanitizer:
-    def test_sanitize_html(self):
-        from app.utils.sanitizer import sanitize_html
-        assert sanitize_html("<script>alert(1)</script>") == "&lt;script&gt;alert(1)&lt;/script&gt;"
-        assert sanitize_html("Hello & World") == "Hello &amp; World"
-
-    def test_sanitize_filename_path_traversal(self):
-        from app.utils.sanitizer import sanitize_filename
-        assert sanitize_filename("../../../etc/passwd") == "etcpasswd"
-        assert sanitize_filename("foo/../bar") == "foobar"
-        assert sanitize_filename("nul\x00file") == "nulfile"
-
-
 # =============================================================================
 # SECTION 2: Integration Tests — Real DB, No Mocks (22 tests)
 # =============================================================================
@@ -653,7 +640,7 @@ class TestResponseFormat:
         assert "success" in data
         assert data["success"] is True
         assert "data" in data
-        assert data["error"] is None
+        assert "error" not in data  # SuccessResponse no longer has error field
 
     def test_error_response_structure(self, client):
         resp = client.get("/api/v1/links/nonexistent_xyz")

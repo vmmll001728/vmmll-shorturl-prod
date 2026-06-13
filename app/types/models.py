@@ -63,6 +63,7 @@ class ErrorResponse(BaseModel):
 
 
 class SuccessResponse(BaseModel):
+    """Unified success response wrapper."""
+
     success: bool = True
     data: Optional[object] = None
-    error: Optional[object] = None

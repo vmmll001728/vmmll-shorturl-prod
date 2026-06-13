@@ -14,7 +14,6 @@ from app.models.link import Link
 from app.types.models import (
     ErrorResponse,
     LinkCreate,
-    LinkCreateResponse,
     LinkInfo,
     LinkRedirect,
     SuccessResponse,
