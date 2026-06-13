@@ -67,13 +67,13 @@ jobs:
           verbose: true
 
   # --------------------------------------------------------------------------
-  # Job 2: sast — Semgrep 静态代码分析（仅 scan，不阻断）
+  # Job 2: sast — Semgrep 静态代码分析（阻断）
   # --------------------------------------------------------------------------
   sast:
     name: SAST (Semgrep)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
+    # P1-5 FIX: 移除 continue-on-error，SAST 发现必须审查
 
     steps:
       - name: Checkout
@@ -114,7 +114,6 @@ jobs:
     name: Container Scan (Trivy)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
 
     steps:
       - name: Checkout
@@ -154,22 +153,44 @@ jobs:
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: 'shorturl:${{ github.sha }}'
-          severity: 'CRITICAL,HIGH'
+          severity: 'CRITICAL'
           format: 'sarif'
           output: trivy-image.sarif
+          exit-code: '1'
+          vuln-type: 'os,library'
+
+      - name: Run Trivy scan HIGH (non-blocking)
+        if: steps.has_dockerfile.outputs.has_dockerfile == 'true'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'shorturl:${{ github.sha }}'
+          severity: 'HIGH'
+          format: 'sarif'
+          output: trivy-high.sarif
           exit-code: '0'
           vuln-type: 'os,library'
 
       # --- 文件系统扫描（fallback） ---
-      - name: Run Trivy scanner (filesystem)
+      - name: Run Trivy scanner CRITICAL (filesystem)
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'fs'
           scan-ref: '.'
           scan-dir-exclude: 'tests/,test_data/,docs/,node_modules/,venv/,.venv/,__pycache__/'
-          severity: 'CRITICAL,HIGH'
+          severity: 'CRITICAL'
           format: 'sarif'
           output: trivy-fs.sarif
+          exit-code: '1'
+
+      - name: Run Trivy scan HIGH (filesystem, non-blocking)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          scan-dir-exclude: 'tests/,test_data/,docs/,node_modules/,venv/,.venv/,__pycache__/'
+          severity: 'HIGH'
+          format: 'sarif'
+          output: trivy-fs-high.sarif
           exit-code: '0'
 
       - name: Upload Trivy FS results
@@ -305,6 +326,6 @@ jobs:
           echo "| 🐳 container-scan    | \`${{ needs.container-scan.result }}\` |"
           echo "| 🐛 integration-test  | \`${{ needs.integration-test.result }}\` |"
           echo ""
-          echo "**注意**: sast 与 container-scan 设置为 continue-on-error，仅报告发现，不阻断合并。"
+          echo "**阻断策略**: CRITICAL 漏洞阻断合并；HIGH 漏洞报告但不阻断（需人工审查）。"
           echo "**integration-test**: 容器内 pytest，网络隔离环境。"
           echo "**Artifact**: Semgrep SARIF → semgrep-results; Trivy FS → trivy-fs-results; Trivy Image → trivy-image-results; Integration → integration-test-results"

@@ -7,8 +7,10 @@ import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 import logging
 
@@ -87,6 +89,29 @@ app.add_middleware(RateLimitMiddleware)
 # Routes
 app.include_router(links_router)
 app.include_router(version_router)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors = exc.errors()
+    messages = []
+    for err in errors:
+        loc = ".".join(str(l) for l in err.get("loc", []))
+        msg = err.get("msg", "")
+        messages.append(f"{loc}: {msg}" if loc else msg)
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"success": False, "error": {"code": "VALIDATION_ERROR", "message": "; ".join(messages)}},
+    )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logging.exception("[UNHANDLED] %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"success": False, "error": {"code": "INTERNAL_ERROR", "message": "Internal server error"}},
+    )
 
 
 @app.get("/health", response_model=SuccessResponse, tags=["health"])

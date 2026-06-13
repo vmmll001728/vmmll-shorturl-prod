@@ -6,6 +6,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.config import config
@@ -29,6 +30,9 @@ def get_db() -> Session:
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -200,6 +204,9 @@ def redirect_to_original(alias: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Link not found")
     if link.is_expired:
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="Link has expired")
-    link.click_count += 1
+    db.execute(
+        text("UPDATE links SET click_count = click_count + 1 WHERE id = :id"),
+        {"id": link.id}
+    )
     db.commit()
     return RedirectResponse(url=link.original_url, status_code=status.HTTP_302_FOUND)
